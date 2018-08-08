@@ -154,6 +154,22 @@
   };
   ```
 
+* 事务
+
+  ```c#
+  using (var conn = new MySqlConnection(connectionString))
+  {
+      conn.Open();// 需要打开，否则失败
+      IDbTransaction trans = conn.BeginTransaction();
+      string sqlCommandText1 = @"update user set name='www.lanhusoft.com' where id=@id";
+      string sqlCommandText2 = @"delete from user where id=@id";
+      int row = conn.Execute(sqlCommandText1, new { id = 3 }, trans);
+      row += conn.Execute(sqlCommandText2, new { id = 4 }, trans);
+      trans.Commit();
+      conn.Close();
+  }
+  ```
+
 #### 释义
 
 以查询的例子解释：
