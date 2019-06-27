@@ -89,3 +89,82 @@ public void WhenRegisteredAsSeparateSingleton_InstancesAreNotTheSame()
 
 #### 转发服务请求
 
+针对多个服务注册实现的一般模式是常见的。大多数第三方 DI 容器框架都实现了这种概念。例如:
+
+* [Autofac](https://autofac.org/) 将该种模式当作默认的模式 - 上面的测试代码已经证明了这点
+* [Windsor](http://www.castleproject.org/projects/windsor/) 中有一个“转发类型”的概念，它允许你“转发”多个服务到一个单例实现中
+* [StructureMap](http://structuremap.github.io/) ([now sunsetted](https://jeremydmiller.com/2018/01/29/sunsetting-structuremap/)) 也同样有“转发”类型的类似概念。据我所知，它的继承者 [Lamar](https://jasperfx.github.io/lamar/) 并没有提供类似的概念，不过，我可能是错的。
+
+鉴于这个需求非常普遍，而 ASP.NET Core DI 容器中没有，这看起来很奇怪。这个问题2年前被提出来[(David Fowler)](https://github.com/aspnet/DependencyInjection/issues/360) ，不过已经被关闭了。幸运的是，有一个概念上简单，但不是很优雅的解决方案。
+
+1. ##### 提供一个服务实例(仅限单例)
+
+   最简单的方法就是在注册你的服务时提供一个 `Foo` 实例。每个已注册的服务会在请求时返回你提供的确切实例，确保只有一个单例实例。
+
+   ```c#
+   [Fact]
+   public void WhenRegisteredAsInstance_InstancesAreTheSame()
+   {
+       var foo = new Foo(); // The singleton instance
+       var services = new ServiceCollection();
+   
+       services.AddSingleton<IFoo>(foo);
+       services.AddSingleton<IBar>(foo);
+   
+       var provider = services.BuildServiceProvider();
+   
+       var foo1 = provider.GetService<IFoo>();
+       var foo2 = provider.GetService<IBar>();
+   
+       Assert.Same(foo1, foo); // PASSES;
+       Assert.Same(foo2, foo); // PASSES;
+   }
+   ```
+
+   这里有一个非常不好的地方（警告）- 你必须在配置的时候能够实例化 `Foo` 对象，并且你必须知道并且提供所有关于它的依赖。在某些情况下它是有用的，但这种方式不是很灵活。
+
+   另外，你只能用这种方法来注册单例类。如果你希望 `Foo` 是各自请求范围内的单例实例（Scoped模式），你很不走运，你可能须要下面的技术。
+
+2. ##### 使用工厂方法实现转发
+
+   如果我们分解我们的需求，那么替代的解决方案可能是:
+
+   * 我们希望已注册的服务（`Foo`）有特殊的生命周期（例如：Singleton or Scoped）
+   * 当 `IFoo` 被请求，返回一个 `Foo` 实例
+   * 当 `IBar` 被请求，也返回一个 `Foo` 实例
+
+   根据这三条规则，我们可以再写一个测试：
+
+   ```c#
+   [Fact]
+   public void WhenRegisteredAsForwardedSingleton_InstancesAreTheSame()
+   {
+       var services = new ServiceCollection();
+   
+       services.AddSingleton<Foo>(); // We must explicitly register Foo
+       services.AddSingleton<IFoo>(x => x.GetRequiredService<Foo>()); // Forward requests to Foo
+       services.AddSingleton<IBar>(x => x.GetRequiredService<Foo>()); // Forward requests to Foo
+   
+       var provider = services.BuildServiceProvider();
+   
+       var foo1 = provider.GetService<Foo>(); // An instance of Foo
+       var foo2 = provider.GetService<IFoo>(); // An instance of Foo
+       var foo3 = provider.GetService<IBar>(); // An instance of Foo
+   
+       Assert.Same(foo1, foo2); // PASSES
+       Assert.Same(foo1, foo3); // PASSES
+   }
+   ```
+
+   为了“转发”对具体类型接口的请求，你必须做两件事:
+   
+   * 使用 `services.AddSingleton<Foo>()` 显示的注册具体类型
+   * 通过提供工厂函数，将接口请求委托给具体的类型：`services.AddSingleton<IFoo>(x => x.GetRequiredService<Foo>())`
+   
+   通过这种方法，你会得到一个真正的 `Foo` 单例实例，无论你请求的是哪种实现的服务。
+   
+   > *这种提供“转发”类型的方式被记录在原始的 [issue](https://github.com/aspnet/DependencyInjection/issues/360) 中，顺带了一个警告 - 它不是很有效。通常最好尽可能避免“服务定位器样式” `GetService()` 调用。不过，我觉得在这种情况下，这绝对是更好的做法。*
+
+#### 总结
+
+在这篇文章中，我总结了如果你使用 ASP.NET Core DI 服务去注册一个以多服务模式的具体类型会发生什么。特别的，我展示了如何使用单例对象的多个副本，这可能会导致一些小bug。为了解决这个问题，你可以在注册的时候提供一个实例，或者使用工厂方法代理服务的解析。尽管使用工厂方法不是非常高效的，但是却是通常情况下的最好方法。
